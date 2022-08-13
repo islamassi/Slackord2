@@ -7,6 +7,7 @@ using Discord.WebSocket;
 using Newtonsoft.Json.Linq;
 using octo = Octokit;
 using Microsoft.Extensions.DependencyInjection;
+using System.Windows.Interop;
 
 namespace Slackord
 {
@@ -278,8 +279,21 @@ namespace Slackord
                     richTextBox1.Text += "Beginning transfer of Slack messages to Discord..." + "\n" +
                     "-----------------------------------------" + "\n";
                 }));
+                JToken possibleThreadTs = null;
+                //var createThread = false;
+                SocketThreadChannel thread = null;
                 foreach (JObject pair in parsed)
                 {
+
+                    var msgTs = (long) pair["ts"];
+                    if (pair.ContainsKey("thread_ts")) {
+                        var threadTs = (long) pair["ts"];
+
+                        if (msgTs == threadTs) {
+                            createThread(message.Channel.Id);   
+                        }
+                    }
+
                     var slackordResponse = "";
                     if (pair.ContainsKey("files"))
                     {
@@ -362,7 +376,57 @@ namespace Slackord
                             {
                                 richTextBox1.Text += "POSTING: " + slackordResponse;
                             }));
-                            await message.Channel.SendMessageAsync(slackordResponse).ConfigureAwait(false);
+                            /*if (isThreadMessage)
+                            {
+                                if (thread == null)
+                                {
+                                    var msg = await message.Channel.SendMessageAsync(slackordResponse).ConfigureAwait(false);
+
+                                    var channel = _discordClient.GetChannel(message.Channel.Id) as SocketTextChannel;
+                                    thread = await channel.CreateThreadAsync("TestThread2", message: msg);
+
+                                }
+                                else {
+
+                                    var msg = await thread.SendMessageAsync(slackordResponse).ConfigureAwait(false);
+
+                                    richTextBox1.Invoke(new Action(() =>
+                                    {
+                                        richTextBox1.Text += "message ID: " + msg.Id + "\n";
+                                        richTextBox1.Text += "channel ID: " + msg.Channel.Id + "\n";
+                                        richTextBox1.Text += "THREAD MESSAGE ------\n";
+                                    }));
+                                }
+
+                                
+
+                            } else {
+
+                                var msg = await message.Channel.SendMessageAsync(slackordResponse).ConfigureAwait(false);
+
+                                richTextBox1.Invoke(new Action(() =>
+                                {
+                                    richTextBox1.Text += "message ID: " + msg.Id + "\n";
+                                    richTextBox1.Text += "channel ID: " + msg.Channel.Id + "\n";
+                                }));
+
+                                /*if (createThread)
+                                {
+                                    var channel = _discordClient.GetChannel(msg.Channel.Id) as SocketTextChannel;
+                                    thread = await channel.CreateThreadAsync("TestThread");
+                                }#1#
+                            }*/
+                            
+                            
+                            /*var channel = _discordClient.GetChannel(msg.Channel.Id) as SocketTextChannel;
+                            var thread = await channel.CreateThreadAsync("TestThread", message: msg);
+                            */
+
+                            //_discordClient.GetGuild()
+
+
+                            // Bot.GetGuild(123456789012345678);
+                            //message.Bot
                         }
                     }
                 }
@@ -379,6 +443,26 @@ namespace Slackord
                 {
                     richTextBox1.Text += "Received a command to post messages to Discord, but no JSON file was parsed prior to receiving the command." + "\n";
                 }));
+            }
+
+            /*var channel = _discordClient.GetChannel(message.Id) as SocketTextChannel;
+            //channel.GetMessageAsync(message.Id).Result;
+            var newChannel = await channel.Guild.CreateTextChannelAsync("Test");*/
+
+
+            /* var guild = _discordClient.GetGuild(message.Id);
+
+             //channel.GetMessageAsync(message.Id).Result;
+             var newChannel = await guild.CreateTextChannelAsync("Test2");*/
+            //newChannel.
+
+        }
+
+        private async void createThread(ulong id) {
+            var channel = _discordClient.GetChannel(id) ;
+            if (channel is SocketTextChannel textChannel)
+            {
+                await textChannel.CreateThreadAsync("TestThread");
             }
         }
 
