@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Net.Sockets;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Discord;
@@ -8,6 +9,7 @@ using Newtonsoft.Json.Linq;
 using octo = Octokit;
 using Microsoft.Extensions.DependencyInjection;
 using System.Windows.Interop;
+using Discord.Rest;
 
 namespace Slackord
 {
@@ -74,15 +76,23 @@ namespace Slackord
         [STAThread]
         private void SelectFileAndConvertJson()
         {
-            _ofd = new OpenFileDialog { Filter = "JSON File|*.json", Title = "Import a JSON file for parsing" };
+            _ofd = new OpenFileDialog { Filter = "JSON File|*.json", Title = "Import a JSON file for parsing", Multiselect = true};
             if (_ofd.ShowDialog() == DialogResult.OK)
             {
-                var json = File.ReadAllText(_ofd.FileName);
-                var parsed = JArray.Parse(json);
-                var parseFailed = false;
+                foreach (string fileName in _ofd.FileNames)
+                {
+                    var json = File.ReadAllText(fileName);
+                    ParseFile(JArray.Parse(json));
+                }
+            }
+        }
+
+        private void ParseFile(JArray messagesJsonArray)
+        {
+            var parseFailed = false;
                 richTextBox1.Text += "Begin parsing JSON data..." + "\n";
                 richTextBox1.Text += "-----------------------------------------" + "\n";
-                foreach (JObject pair in parsed)
+                foreach (JObject pair in messagesJsonArray)
                 {
                     var debugResponse = "";
                     if (pair.ContainsKey("files"))
@@ -95,7 +105,7 @@ namespace Slackord
                         {
                             debugResponse = ("Parsed: " + pair["files"][0]["url_private"].ToString()) + "\n";
                         }
-                        richTextBox1.Text += debugResponse + "\n";
+                        //richTextBox1.Text += debugResponse + "\n";
                     }
                     if (pair.ContainsKey("user_profile") && pair.ContainsKey("text")) 
                     {
@@ -161,7 +171,7 @@ namespace Slackord
                                 debugResponse = "Parsed: " + newDateTime + " - " + slackUserName + ": " + slackMessage + " " + "\n";
                             }
                         }
-                        richTextBox1.Text += debugResponse + "\n";
+                        //richTextBox1.Text += debugResponse + "\n";
                     }
                 }
                 richTextBox1.Text += "-----------------------------------------" + "\n";
@@ -186,9 +196,7 @@ namespace Slackord
 
                 }
                 _skippedMessages = 0;
-            }
         }
-
         private void CheckForUpdatesToolStripMenuItem_Click_1(object sender, EventArgs e)
         {
             if (_octoClient == null)
@@ -268,49 +276,98 @@ namespace Slackord
             _ = MainAsync();
         }
 
+        private SocketThreadChannel identifiedThread = null;
+        private JToken identifiedThreadTs = null;
         private async Task MessageReceived(SocketMessage message)
         {
             if (_isFileParsed && message.Content.Equals(CommandTrigger, StringComparison.OrdinalIgnoreCase))
             {
-                var json = File.ReadAllText(_ofd.FileName);
-                var parsed = JArray.Parse(json);
+                foreach (string fileName in _ofd.FileNames)
+                {
+                    var json = File.ReadAllText(fileName);
+                    richTextBox1.Invoke(new Action(() =>
+                    {
+                        richTextBox1.Text += "FILE: " + fileName + "\n";
+                    }));
+                    await SendMessagesInFile(message, JArray.Parse(json));
+                }
+                
+                
+            }
+            else if (!_isFileParsed && message.Content.Equals(CommandTrigger, StringComparison.OrdinalIgnoreCase))
+            {
+                await message.Channel.SendMessageAsync("Sorry, there's nothing to post because no JSON file was parsed prior to sending this command.").ConfigureAwait(false);
                 richTextBox1.Invoke(new Action(() =>
+                {
+                    richTextBox1.Text += "Received a command to post messages to Discord, but no JSON file was parsed prior to receiving the command." + "\n";
+                }));
+            }
+        }
+
+        private async Task SendMessagesInFile(SocketMessage message, JArray messagesJsonArray)
+        {
+            richTextBox1.Invoke(new Action(() =>
                 {
                     richTextBox1.Text += "Beginning transfer of Slack messages to Discord..." + "\n" +
                     "-----------------------------------------" + "\n";
                 }));
-                JToken possibleThreadTs = null;
-                //var createThread = false;
-                SocketThreadChannel thread = null;
-                foreach (JObject pair in parsed)
+                
+                foreach (JObject pair in messagesJsonArray)
                 {
-
-                    var msgTs = (long) pair["ts"];
+                    var shouldCreateThread = false;
+                    
+                    var msgTs = pair["ts"];
                     if (pair.ContainsKey("thread_ts")) {
-                        var threadTs = (long) pair["ts"];
+                        var threadTs = pair["thread_ts"];
 
-                        if (msgTs == threadTs) {
-                            createThread(message.Channel.Id);   
+                        if (!threadTs.Equals(identifiedThreadTs))
+                        {
+                            identifiedThreadTs = null;
+                            identifiedThread = null;
                         }
+                        
+                        if (msgTs.Equals(threadTs))
+                        {
+                            shouldCreateThread = true;
+                            identifiedThreadTs = threadTs;
+                        }
+                    }
+                    else
+                    {
+                        identifiedThreadTs = null;
+                        identifiedThread = null;
                     }
 
                     var slackordResponse = "";
                     if (pair.ContainsKey("files"))
                     {
-                        try
+                        foreach (JToken file in pair["files"])
                         {
-                            slackordResponse = pair["text"] + "\n" + pair["files"][0]["thumb_1024"].ToString() + "\n";
-                        }
-                        catch (NullReferenceException)
-                        {
-                            slackordResponse = pair["text"] + "\n" + pair["files"][0]["url_private"].ToString() + "\n";
-                        }
+                            try
+                            {
+                                slackordResponse = pair["text"] + "\n" + file["thumb_1024"].ToString() + "\n";
+                            }
+                            catch (NullReferenceException)
+                            {
+                                try
+                                {
+                                    slackordResponse = pair["text"] + "\n" + file["url_private"].ToString() + "\n";
+                                }
+                                catch (Exception e)
+                                {
+                                    Console.WriteLine(e);
+                                }
+                            }
 
-                        richTextBox1.Invoke(new Action(() =>
-                        {
-                            richTextBox1.Text += "POSTING: " + slackordResponse;
-                        }));
-                        await message.Channel.SendMessageAsync(slackordResponse).ConfigureAwait(false);
+                            /*richTextBox1.Invoke(new Action(() =>
+                            {
+                                richTextBox1.Text += "POSTING: " + slackordResponse;
+                            }));*/
+                        
+                            await SendMessage(slackordResponse, shouldCreateThread, message.Channel); 
+                            //await message.Channel.SendMessageAsync(slackordResponse).ConfigureAwait(false);
+
+                        }
                     }
                     if (!pair.ContainsKey("user_profile") && !pair.ContainsKey("text"))
                     {
@@ -355,79 +412,23 @@ namespace Slackord
 
                         if (String.IsNullOrEmpty(slackUserName))
                         {
-                            slackordResponse = newDateTime + " - " + slackRealName + ": " + slackMessage + " " + "\n";
+                            slackordResponse = "**" + slackRealName + "** - " + newDateTime + "\n" + "> " + slackMessage + "\n";
                         }
                         else
                         {
-                            slackordResponse = newDateTime + " - " + slackUserName + ": " + slackMessage + " " + "\n";
+                            slackordResponse = "**" + slackUserName + "** - " + newDateTime + "\n" + "> " + slackMessage + "\n";
                         }
                         if (slackordResponse.Length >= 2000)
                         {
                             richTextBox1.Invoke(new Action(() =>
                             {
                                 richTextBox1.ForeColor = Color.DarkOrange;
-                                richTextBox1.Text += "SKIPPING: " + slackordResponse;
+                                richTextBox1.Text += "trimmed: " + slackordResponse;
                                 richTextBox1.ForeColor = Color.Green;
                             }));
+                            slackordResponse = slackordResponse.Substring(0, 1999);
                         }
-                        else
-                        {
-                            richTextBox1.Invoke(new Action(() =>
-                            {
-                                richTextBox1.Text += "POSTING: " + slackordResponse;
-                            }));
-                            /*if (isThreadMessage)
-                            {
-                                if (thread == null)
-                                {
-                                    var msg = await message.Channel.SendMessageAsync(slackordResponse).ConfigureAwait(false);
-
-                                    var channel = _discordClient.GetChannel(message.Channel.Id) as SocketTextChannel;
-                                    thread = await channel.CreateThreadAsync("TestThread2", message: msg);
-
-                                }
-                                else {
-
-                                    var msg = await thread.SendMessageAsync(slackordResponse).ConfigureAwait(false);
-
-                                    richTextBox1.Invoke(new Action(() =>
-                                    {
-                                        richTextBox1.Text += "message ID: " + msg.Id + "\n";
-                                        richTextBox1.Text += "channel ID: " + msg.Channel.Id + "\n";
-                                        richTextBox1.Text += "THREAD MESSAGE ------\n";
-                                    }));
-                                }
-
-                                
-
-                            } else {
-
-                                var msg = await message.Channel.SendMessageAsync(slackordResponse).ConfigureAwait(false);
-
-                                richTextBox1.Invoke(new Action(() =>
-                                {
-                                    richTextBox1.Text += "message ID: " + msg.Id + "\n";
-                                    richTextBox1.Text += "channel ID: " + msg.Channel.Id + "\n";
-                                }));
-
-                                /*if (createThread)
-                                {
-                                    var channel = _discordClient.GetChannel(msg.Channel.Id) as SocketTextChannel;
-                                    thread = await channel.CreateThreadAsync("TestThread");
-                                }#1#
-                            }*/
-                            
-                            
-                            /*var channel = _discordClient.GetChannel(msg.Channel.Id) as SocketTextChannel;
-                            var thread = await channel.CreateThreadAsync("TestThread", message: msg);
-                            */
-
-                            //_discordClient.GetGuild()
-
-
-                            // Bot.GetGuild(123456789012345678);
-                            //message.Bot
-                        }
+                        await SendMessage(slackordResponse, shouldCreateThread, message.Channel);
                     }
                 }
                 richTextBox1.Invoke(new Action(() =>
@@ -435,35 +436,35 @@ namespace Slackord
                     richTextBox1.Text += "-----------------------------------------" + "\n" +
                     "All messages sent to Discord successfully!" + "\n";
                 }));
-            }
-            else if (!_isFileParsed && message.Content.Equals(CommandTrigger, StringComparison.OrdinalIgnoreCase))
-            {
-                await message.Channel.SendMessageAsync("Sorry, there's nothing to post because no JSON file was parsed prior to sending this command.").ConfigureAwait(false);
-                richTextBox1.Invoke(new Action(() =>
-                {
-                    richTextBox1.Text += "Received a command to post messages to Discord, but no JSON file was parsed prior to receiving the command." + "\n";
-                }));
-            }
-
-            /*var channel = _discordClient.GetChannel(message.Id) as SocketTextChannel;
-            //channel.GetMessageAsync(message.Id).Result;
-            var newChannel = await channel.Guild.CreateTextChannelAsync("Test");*/
-
-
-            /* var guild = _discordClient.GetGuild(message.Id);
-
-             //channel.GetMessageAsync(message.Id).Result;
-             var newChannel = await guild.CreateTextChannelAsync("Test2");*/
-            //newChannel.
-
         }
+        private async Task<bool> SendMessage(String slackordResponse, bool shouldCreateThread, ISocketMessageChannel channel)
+        {
+            RestUserMessage sentMsg = null;
+            if (identifiedThread != null)
+            {
+                sentMsg = await identifiedThread.SendMessageAsync(slackordResponse).ConfigureAwait(false);
+            }
+            else
+            {
+                sentMsg = await channel.SendMessageAsync(slackordResponse).ConfigureAwait(false);
+            }
 
-        private async void createThread(ulong id) {
-            var channel = _discordClient.GetChannel(id) ;
+            if (shouldCreateThread)
+            {
+                identifiedThread = await CreateThread(sentMsg);
+            }
+
+            return await Task.FromResult(true);
+        }
+        
+        private async Task<SocketThreadChannel> CreateThread(RestUserMessage msg) {
+            var channel = _discordClient.GetChannel(msg.Channel.Id) ;
             if (channel is SocketTextChannel textChannel)
             {
-                await textChannel.CreateThreadAsync("TestThread");
+                return await textChannel.CreateThreadAsync("Thread", message:msg);
             }
+
+            return await Task.FromResult<SocketThreadChannel>(null);
         }
 
         private void ShowEnterTokenDialog()
