@@ -1,6 +1,9 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Sockets;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Discord;
@@ -103,7 +106,15 @@ namespace Slackord
                         }
                         catch (NullReferenceException)
                         {
-                            debugResponse = ("Parsed: " + pair["files"][0]["url_private"].ToString()) + "\n";
+                            try
+                            {
+                                debugResponse = ("Parsed: " + pair["files"][0]["url_private"].ToString()) + "\n";
+                            }
+                            catch (Exception e)
+                            {
+                                Console.WriteLine(e);
+                                continue;
+                            }
                         }
                         //richTextBox1.Text += debugResponse + "\n";
                     }
@@ -276,8 +287,9 @@ namespace Slackord
             _ = MainAsync();
         }
 
-        private SocketThreadChannel identifiedThread = null;
-        private JToken identifiedThreadTs = null;
+        //private SocketThreadChannel identifiedThread = null;
+        //private JToken identifiedThreadTs = null;
+        private Dictionary<JToken, SocketThreadChannel> createdThreads = new Dictionary<JToken, SocketThreadChannel>();
         private async Task MessageReceived(SocketMessage message)
         {
             if (_isFileParsed && message.Content.Equals(CommandTrigger, StringComparison.OrdinalIgnoreCase))
@@ -317,25 +329,10 @@ namespace Slackord
                     var shouldCreateThread = false;
                     
                     var msgTs = pair["ts"];
-                    if (pair.ContainsKey("thread_ts")) {
-                        var threadTs = pair["thread_ts"];
-
-                        if (!threadTs.Equals(identifiedThreadTs))
-                        {
-                            identifiedThreadTs = null;
-                            identifiedThread = null;
-                        }
-                        
-                        if (msgTs.Equals(threadTs))
-                        {
-                            shouldCreateThread = true;
-                            identifiedThreadTs = threadTs;
-                        }
-                    }
-                    else
+                    var threadTs  = pair["thread_ts"];
+                    if (msgTs.Equals(threadTs))
                     {
-                        identifiedThreadTs = null;
-                        identifiedThread = null;
+                        shouldCreateThread = true;
                     }
 
                     var slackordResponse = "";
@@ -356,6 +353,7 @@ namespace Slackord
                                 catch (Exception e)
                                 {
                                     Console.WriteLine(e);
+                                    continue;
                                 }
                             }
 
@@ -364,12 +362,12 @@ namespace Slackord
                                 richTextBox1.Text += "POSTING: " + slackordResponse;
                             }));*/
                         
-                            await SendMessage(slackordResponse, shouldCreateThread, message.Channel); 
+                            await SendMessage(slackordResponse, shouldCreateThread, threadTs, message.Channel); 
                             //await message.Channel.SendMessageAsync(slackordResponse).ConfigureAwait(false);
 
                         }
                     }
-                    if (!pair.ContainsKey("user_profile") && !pair.ContainsKey("text"))
+                    if (!pair.ContainsKey("text"))
                     {
                         richTextBox1.Invoke(new Action(() =>
                         {
@@ -378,57 +376,10 @@ namespace Slackord
                             richTextBox1.ForeColor = Color.Green;
                         }));
                     }
-                    else if (pair.ContainsKey("user_profile") && pair.ContainsKey("text"))
+                    else if (pair.ContainsKey("text"))
                     {
-                        // Can't pass a JToken as a value, so we have to convert it to a string.
-                        var rawTimeDate = pair["ts"];
-                        var oldDateTime = (double)rawTimeDate;
-                        var convertDateTime = ConvertFromUnixTimestampToHumanReadableTime(oldDateTime);
-                        var newDateTime = convertDateTime.ToString();
-                        var slackUserName = pair["user_profile"]["display_name"].ToString();
-                        var slackRealName = pair["user_profile"]["real_name"];
-                        var slackMessage = pair["text"] + "\n";
-
-                        if (pair["text"].ToString().Contains("|"))
-                        {
-                            string preSplit = pair["text"].ToString();
-                            string[] split = preSplit.Split(new char[] { '|' });
-                            string originalText = split[0];
-                            string splitText = split[1];
-
-                            if (originalText.Contains(splitText))
-                            {
-                                slackMessage = splitText + "\n";
-                            }
-                            else
-                            {
-                                slackMessage = originalText + "\n";
-                            }
-                        }
-                        else
-                        {
-                            slackMessage = pair["text"].ToString();
-                        }
-
-                        if (String.IsNullOrEmpty(slackUserName))
-                        {
-                            slackordResponse = "**" + slackRealName + "** - " + newDateTime + "\n" + "> " + slackMessage + "\n";
-                        }
-                        else
-                        {
-                            slackordResponse = "**" + slackUserName + "** - " + newDateTime + "\n" + "> " + slackMessage + "\n";
-                        }
-                        if (slackordResponse.Length >= 2000)
-                        {
-                            richTextBox1.Invoke(new Action(() =>
-                            {
-                                richTextBox1.ForeColor = Color.DarkOrange;
-                                richTextBox1.Text += "trimmed: " + slackordResponse;
-                                richTextBox1.ForeColor = Color.Green;
-                            }));
-                            slackordResponse = slackordResponse.Substring(0, 1999);
-                        }
-                        await SendMessage(slackordResponse, shouldCreateThread, message.Channel);
+                        var formattedTextMessage = FormatTextMessage(pair);
+                        await SendMessage(formattedTextMessage, shouldCreateThread, threadTs, message.Channel);
                     }
                 }
                 richTextBox1.Invoke(new Action(() =>
@@ -437,12 +388,75 @@ namespace Slackord
                     "All messages sent to Discord successfully!" + "\n";
                 }));
         }
-        private async Task<bool> SendMessage(String slackordResponse, bool shouldCreateThread, ISocketMessageChannel channel)
+
+        private String FormatTextMessage(JObject pair)
+        {
+            var slackordResponse = "";
+
+            // Can't pass a JToken as a value, so we have to convert it to a string.
+            var rawTimeDate = pair["ts"];
+            var oldDateTime = (double) rawTimeDate;
+            var convertDateTime = ConvertFromUnixTimestampToHumanReadableTime(oldDateTime);
+            var newDateTime = convertDateTime.ToString();
+            var slackMessage = pair["text"] + "\n";
+
+
+            var name = "Bot";
+            if (pair.ContainsKey("user_profile")) {
+                var slackUserName = pair["user_profile"]["display_name"].ToString();
+                var slackRealName = pair["user_profile"]["real_name"];
+                name =  String.IsNullOrEmpty(slackUserName) ? slackRealName + "" : slackUserName;
+            }
+            
+            if (pair["text"].ToString().Contains("|"))
+            {
+                string preSplit = pair["text"].ToString();
+                string[] split = preSplit.Split(new char[] {'|'});
+                string originalText = split[0];
+                string splitText = split[1];
+
+                if (originalText.Contains(splitText))
+                {
+                    slackMessage = splitText + "\n";
+                }
+                else
+                {
+                    slackMessage = originalText + "\n";
+                }
+            }
+            else
+            {
+                slackMessage = pair["text"].ToString();
+            }
+            
+            slackordResponse = "_ _ \n**" + name + "** - " + newDateTime + "\n>>> " + slackMessage + "\n";
+            
+            slackordResponse = Regex.Replace(slackordResponse,
+                @"((http|ftp|https):\/\/[\w\-_]+(\.[\w\-_]+)+([\w\-\.,@?^=%&amp;:/~\+#]*[\w\-\@?^=%&amp;/~\+#])?)",
+                " <$1> ");
+            
+            if (slackordResponse.Length >= 2000)
+            {
+                richTextBox1.Invoke(new Action(() =>
+                {
+                    richTextBox1.ForeColor = Color.DarkOrange;
+                    richTextBox1.Text += "trimmed: " + slackordResponse;
+                    richTextBox1.ForeColor = Color.Green;
+                }));
+                slackordResponse = slackordResponse.Substring(0, 1999);
+            }
+
+            return slackordResponse;
+        }
+        
+        private async Task<bool> SendMessage(String slackordResponse, bool shouldCreateThread, JToken threadTs, ISocketMessageChannel channel)
         {
             RestUserMessage sentMsg = null;
-            if (identifiedThread != null)
+            
+            if ( threadTs != null && createdThreads.ContainsKey(threadTs))
             {
-                sentMsg = await identifiedThread.SendMessageAsync(slackordResponse).ConfigureAwait(false);
+                var thread = createdThreads[threadTs];
+                sentMsg = await thread.SendMessageAsync(slackordResponse).ConfigureAwait(false);
             }
             else
             {
@@ -451,7 +465,7 @@ namespace Slackord
 
             if (shouldCreateThread)
             {
-                identifiedThread = await CreateThread(sentMsg);
+                createdThreads[threadTs] = await CreateThread(sentMsg);
             }
 
             return await Task.FromResult(true);
